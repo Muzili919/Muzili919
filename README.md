@@ -10,7 +10,7 @@
 
 Independent full-stack engineer · AI-paired coding · Indie-friendly
 
-[🌐 muzi.studio](https://muzi.studio) · [📧 muzi880919@gmail.com](mailto:muzi880919@gmail.com)
+[🌐 muzi.studio](https://muzi.studio) · [📧 hi@muzi.studio](mailto:hi@muzi.studio)
 
 </div>
 
@@ -38,7 +38,7 @@ Vercel · Cloudflare · DeepSeek · OpenAI · Claude · GLM
 ### 📡 How to reach me
 
 - 🌐 [muzi.studio](https://muzi.studio) — portfolio
-- 📧 [muzi880919@gmail.com](mailto:muzi880919@gmail.com) — reply within 24h
+- 📧 [hi@muzi.studio](mailto:hi@muzi.studio) — reply within 24h
 - 💬 WeChat (China only) — see [muzi.studio/zh#contact](https://muzi.studio/zh#contact)
 
 > Got an idea you want shipped fast? Drop a line — I reply fast and don't pitch hard.
@@ -71,7 +71,7 @@ Vercel · Cloudflare · DeepSeek · OpenAI · Claude · GLM
 ### 联系
 
 - 🌐 [muzi.studio](https://muzi.studio)
-- 📧 muzi880919@gmail.com
+- 📧 hi@muzi.studio
 - 💬 微信：扫码 [muzi.studio/zh#contact](https://muzi.studio/zh#contact)
 
 </details>
