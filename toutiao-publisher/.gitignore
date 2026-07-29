@@ -1,0 +1,18 @@
+# 密钥与本地配置——绝对不能提交
+.env
+config/config.yaml
+config/sources.json
+
+# 运行时状态：登录态、日志、运行记录、生成的图片
+state/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# 系统
+.DS_Store

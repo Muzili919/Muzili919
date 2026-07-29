@@ -1,0 +1,12 @@
+# 核心
+playwright==1.49.0          # 头条发布：持久登录态浏览器自动化
+websockets==13.1            # CDP：连本地 Chrome 9230 让 ChatGPT 生图
+httpx==0.28.1               # HTTP：CDP 目标发现、图片下载、告警推送
+openai==1.59.0              # LLM：OpenAI 兼容客户端（默认走 DeepSeek）
+feedparser==6.0.11          # RSS 抓取
+PyYAML==6.0.2               # 配置文件
+Pillow==11.0.0              # 图片质量闸
+python-dotenv==1.0.1        # .env 加载
+
+# 开发
+pytest==8.3.4
