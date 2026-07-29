@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<!--
+  仿真头条微头条发布页，用于集成测试。
+
+  只复刻 publish/toutiao.py 真正依赖的 DOM 特征：
+    - div.ProseMirror[contenteditable]  正文编辑器
+    - input[type=file]                 配图上传（真实页面里是隐藏的，这里也隐藏，
+                                        用来验证生产代码的隐藏 input 兜底逻辑）
+    - button 含"发布"文案
+    - 点击后出现"发布成功"
+-->
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>发布微头条</title></head>
+<body>
+<div id="app">
+  <div class="syl-editor">
+    <div class="ProseMirror" contenteditable="true"
+         style="border:1px solid #ddd;min-height:120px;padding:12px"></div>
+  </div>
+
+  <!-- 真实页面把 file input 藏起来，用自定义按钮触发 -->
+  <input type="file" accept="image/*" style="display:none">
+  <div id="upload-preview"></div>
+
+  <button id="publish-btn">发布</button>
+  <div id="result"></div>
+</div>
+
+<script>
+  const editor  = document.querySelector('.ProseMirror');
+  const fileIn  = document.querySelector('input[type=file]');
+  const preview = document.getElementById('upload-preview');
+  const result  = document.getElementById('result');
+
+  fileIn.addEventListener('change', () => {
+    if (fileIn.files.length) {
+      const div = document.createElement('div');
+      div.className = 'thumb';
+      div.textContent = '已上传：' + fileIn.files[0].name;
+      preview.appendChild(div);
+    }
+  });
+
+  document.getElementById('publish-btn').addEventListener('click', () => {
+    if (editor.innerText.trim() === '') {
+      result.textContent = '正文不能为空';
+      return;
+    }
+    // 记录实际收到的内容，供测试断言
+    window.__published = {
+      content: editor.innerText,
+      images: preview.querySelectorAll('.thumb').length
+    };
+    setTimeout(() => { result.textContent = '发布成功'; }, 500);
+  });
+</script>
+</body>
+</html>

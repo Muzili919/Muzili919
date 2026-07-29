@@ -1,12 +1,14 @@
+# 版本号为实际安装并跑通全部测试的组合（34 项通过，含真浏览器集成测试）。
+
 # 核心
 playwright==1.49.0          # 头条发布：持久登录态浏览器自动化
-websockets==13.1            # CDP：连本地 Chrome 9230 让 ChatGPT 生图
+websockets==16.1.1          # CDP：连本地 Chrome 9230 让 ChatGPT 生图
 httpx==0.28.1               # HTTP：CDP 目标发现、图片下载、告警推送
-openai==1.59.0              # LLM：OpenAI 兼容客户端（默认走 DeepSeek）
-feedparser==6.0.11          # RSS 抓取
-PyYAML==6.0.2               # 配置文件
-Pillow==11.0.0              # 图片质量闸
-python-dotenv==1.0.1        # .env 加载
+openai==2.50.0              # LLM：OpenAI 兼容客户端（默认走 DeepSeek）
+feedparser==6.0.13          # RSS 抓取
+PyYAML==6.0.3               # 配置文件
+pillow==12.3.0              # 图片质量闸
+python-dotenv==1.2.2        # .env 加载
 
 # 开发
-pytest==8.3.4
+pytest==9.1.1

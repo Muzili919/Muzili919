@@ -59,6 +59,13 @@ publish:
   type_delay_ms: [40, 120]
   # 发布后确认成功的等待秒数
   confirm_timeout: 30
+  # 指定浏览器可执行文件。留空用 Playwright 自带的那份，一般不用改。
+  # 想复用日常的 Chrome 才需要填，例如：
+  #   /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+  chrome_executable: ""
+  # 额外的浏览器启动参数。本机一般留空；
+  # 在容器/CI 里以 root 运行时需要 ["--no-sandbox", "--disable-dev-shm-usage"]
+  launch_args: []
 
 health:
   # 超过这么多小时没有一次成功发布，健康检查就告警

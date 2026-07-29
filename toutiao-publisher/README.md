@@ -41,22 +41,22 @@ ChatGPT 生图 (CDP :9230)   ← 失败可降级，不阻断发布
 
 ```bash
 cd toutiao-publisher
-
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-playwright install chromium
-
-cp config/config.example.yaml config/config.yaml
-cp config/sources.example.json config/sources.json
-cp .env.example .env
+./setup.sh
 ```
 
-编辑 `.env`（填 LLM key 和至少一个告警渠道），编辑 `config/config.yaml`（改 `content.domain` 等定位信息），编辑 `config/sources.json`（换成你关注的 RSS 源）。
+一条命令搞定虚拟环境、依赖、Chromium、配置文件，最后跑一遍测试，并列出还需要你手动填的项。幂等，重复执行安全。
+
+装完编辑三个文件：
+
+- `.env` —— LLM key 和至少一个告警渠道
+- `config/config.yaml` —— `content.domain` 等账号定位信息
+- `config/sources.json` —— 换成你关注的 RSS 源
 
 > **告警渠道一定要配。** 不配的话失败了你收不到通知，等于回到原来那个"悄无声息"的状态。Server酱最省事，微信直接收推送：https://sct.ftqq.com
 
 ## 首次配置（三步，各做一次）
+
+这三步需要你的账号和手机，没法自动化。
 
 **1. 存头条登录态**
 
@@ -195,10 +195,23 @@ python -m toutiao_publisher doctor     # 外部依赖逐项体检
 ## 测试
 
 ```bash
-python -m pytest tests/ -q
+python -m pytest tests/ -q          # 34 项
 ```
 
-覆盖质量闸、去重、状态存储、LLM JSON 抽取、钉钉签名等纯逻辑。浏览器和 LLM 相关的部分不做 mock——那种 mock 测不出真问题，靠 `doctor` 做真实体检更有意义。
+**单元测试**（`test_core.py`，24 项）覆盖质量闸、去重、状态存储、LLM JSON 抽取、钉钉签名等纯逻辑。
+
+**集成测试**（`test_integration.py`，10 项）拿真 Chromium 跑 CDP 生图和 Playwright 发布两条链路。用本地仿真页面代替 ChatGPT 和头条，DOM 结构复刻生产代码依赖的特征，交互行为（React 式的按钮禁用、异步出图、隐藏 file input）也一并模拟。验证到的东西：
+
+- CDP WebSocket 协议层：命令/响应配对、事件流过滤
+- `execCommand` 插入文本能触发页面状态更新——直接改 `innerText` 不会，发送按钮会一直禁用，这条路径必须实测才发现得了
+- 轮询等待能正确识别"新增的"图片
+- 页面内 `fetch` + `FileReader` 转 base64 的回传路径
+- 完整发布流程：输入正文 → 上传配图（走隐藏 input 兜底）→ 点发布 → 确认成功
+- 演练模式确实不点发布，且留下预览截图
+
+**选择器本身仍需对真实站点验证**——仿真页面证明的是协议层和交互逻辑正确，不能证明 `_SELECTORS` 匹配得上今天的 ChatGPT 和头条。这部分靠 `doctor` 和演练模式在本机确认。
+
+没有 Chromium 的环境会自动跳过集成测试，不影响单元测试。
 
 ## 已知限制
 

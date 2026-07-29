@@ -74,6 +74,17 @@ class ToutiaoPublisher:
         self.delay_range = (int(delay[0]), int(delay[1]))
         self.confirm_timeout = int(cfg.get("publish.confirm_timeout", 30))
         self.timeout_ms = int(cfg.get("run.timeouts.publish", 180)) * 1000
+        # 指定浏览器可执行文件。留空则用 Playwright 自带的那份。
+        self.executable_path = cfg.get("publish.chrome_executable", "") or None
+        # 额外启动参数。容器/CI 里以 root 运行时需要 --no-sandbox。
+        self.launch_args = list(cfg.get("publish.launch_args", []) or [])
+
+    def _launch(self, pw, headless: bool):
+        """统一的浏览器启动入口，让可执行文件和启动参数只配置一次。"""
+        kwargs = {"headless": headless, "args": self.launch_args}
+        if self.executable_path:
+            kwargs["executable_path"] = self.executable_path
+        return pw.chromium.launch(**kwargs)
 
     def check_login(self) -> str:
         """健康检查用：打开发布页，确认登录态还在。"""
@@ -84,7 +95,7 @@ class ToutiaoPublisher:
             )
 
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            browser = self._launch(pw, headless=True)
             try:
                 ctx = browser.new_context(storage_state=str(self.storage_state))
                 page = ctx.new_page()
@@ -104,7 +115,7 @@ class ToutiaoPublisher:
             )
 
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=self.headless)
+            browser = self._launch(pw, headless=self.headless)
             try:
                 ctx = browser.new_context(
                     storage_state=str(self.storage_state),
