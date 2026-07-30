@@ -33,8 +33,13 @@ _SELECTORS = {
         "#composer-submit-button",
         "button[aria-label*='Send']",
     ],
-    # 生成的图片：ChatGPT 把图放在 oaiusercontent 域名下
+    # 生成的图片。ChatGPT 换过存放位置，所以新旧都留着——多一个候选不花成本，
+    # 少一个就是"图明明出来了但认不出来"，而且报错长得像超时，极容易误判成
+    # "生图失败"（2026-07-30 实测踩过：图已生成，全部候选都不匹配，白等 240 秒）。
     "generated_image": [
+        # 2026-07 当前形态：/backend-api/estuary/content?id=file_xxx
+        "main img[src*='estuary/content']",
+        # 更早的形态，保留兼容
         "img[src*='oaiusercontent']",
         "main img[src^='blob:']",
         "main img[alt*='Generated']",
@@ -121,8 +126,10 @@ def find_chatgpt_target(port: int, url_contains: str) -> CDPTarget:
         resp.raise_for_status()
     except Exception as exc:  # noqa: BLE001
         raise CDPError(
-            f"连不上 {base} —— Chrome 没有开着调试端口。\n"
-            f"修复：先关掉所有 Chrome 窗口，再执行 scripts/launch_chrome.sh 启动。\n"
+            f"连不上 {base} —— 没有 Chrome 在这个端口上开调试。\n"
+            f"修复：执行 scripts/launch_chrome.sh（用独立 profile，不需要关掉别的 Chrome）。\n"
+            f"如果这个端口上本来就有别的 Chrome 实例，换一个：\n"
+            f"  CDP_PORT=xxxx ./scripts/launch_chrome.sh + 同步改 config.yaml 的 image.cdp_port\n"
             f"底层错误：{exc}"
         ) from exc
 
@@ -149,10 +156,19 @@ def find_chatgpt_target(port: int, url_contains: str) -> CDPTarget:
 
 
 class ChatGPTImageGenerator:
-    def __init__(self, port: int, url_contains: str, wait_timeout: int = 240):
+    def __init__(
+        self,
+        port: int,
+        url_contains: str,
+        wait_timeout: int = 240,
+        new_chat_url: str = "https://chatgpt.com/",
+    ):
         self.port = port
         self.url_contains = url_contains
         self.wait_timeout = wait_timeout
+        # 临时标签页开哪个地址。生产就是 ChatGPT 首页（= 一段新对话），
+        # 测试里指向本地仿真页
+        self.new_chat_url = new_chat_url
 
     def probe(self) -> str:
         """健康检查用：确认端口通、标签页在、composer 可见。"""
@@ -168,22 +184,127 @@ class ChatGPTImageGenerator:
         return f"OK — {target.title[:60]}"
 
     def generate(self, prompt: str) -> bytes:
-        """发提示词，等出图，返回图片二进制。"""
-        target = find_chatgpt_target(self.port, self.url_contains)
-        log.info("已连上 ChatGPT 标签页：%s", target.title[:60])
+        """发提示词，等出图，返回图片二进制。
 
-        with CDPSession(target.ws_url) as sess:
-            sess.command("Runtime.enable")
-            sess.command("Page.enable")
+        在**临时新标签页**里开一段新对话，用完就关。不复用已经打开的那个
+        ChatGPT 标签页——那是人在用的对话，每天往里塞一条生图提示词，
+        几周下来对话历史就没法看了。顺带的好处是新对话里一张图都没有，
+        "哪张是新出的图"判断得干干净净。
+        """
+        # 先确认那个 Chrome 里确实登录着 ChatGPT，再开新标签页；
+        # 顺序反了的话，没登录时会留下一个空标签页
+        anchor = find_chatgpt_target(self.port, self.url_contains)
+        log.info("ChatGPT 已就绪（参照标签页：%s）", anchor.title[:50])
 
-            before = self._image_urls(sess)
-            log.info("发送生图提示词前，页面已有 %d 张图", len(before))
+        target_id, ws_url = self._open_temp_tab()
+        succeeded = False
+        try:
+            with CDPSession(ws_url) as sess:
+                sess.command("Runtime.enable")
+                sess.command("Page.enable")
+                self._wait_for_composer(sess)
 
-            self._send_prompt(sess, prompt)
-            new_url = self._wait_for_new_image(sess, before)
-            log.info("检测到新图：%s", new_url[:90])
+                before = self._image_urls(sess)
+                log.info("新对话里已有 %d 张图（正常应为 0）", len(before))
 
-            return self._download_in_page(sess, new_url)
+                self._send_prompt(sess, prompt)
+                new_url = self._wait_for_new_image(sess, before)
+                log.info("检测到新图：%s", new_url[:90])
+
+                data = self._download_in_page(sess, new_url)
+                succeeded = True
+                return data
+        finally:
+            # 失败时留着现场。几乎所有报错都在让人"打开那个标签页看一眼它实际回了
+            # 什么"，顺手关掉就等于把唯一的线索删了。
+            if succeeded:
+                self._close_temp_tab(target_id)
+            else:
+                log.warning(
+                    "生图失败，临时标签页留着以便排查（用完手动关）：%s", target_id[:12]
+                )
+
+    def _open_temp_tab(self) -> tuple[str, str]:
+        """开一个临时标签页，返回 (targetId, 它的 page ws 地址)。"""
+        base = f"http://127.0.0.1:{self.port}"
+        try:
+            browser_ws = httpx.get(f"{base}/json/version", timeout=5.0).json().get(
+                "webSocketDebuggerUrl"
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise CDPError(f"取浏览器级 CDP 端点失败：{exc}") from exc
+        if not browser_ws:
+            raise CDPError(f"{base}/json/version 里没有 webSocketDebuggerUrl，开不了新标签页。")
+
+        with CDPSession(browser_ws) as browser:
+            target_id = browser.command(
+                "Target.createTarget", {"url": self.new_chat_url}
+            ).get("targetId")
+        if not target_id:
+            raise CDPError("Target.createTarget 没返回 targetId。")
+
+        # 新标签页要等一会儿才在 /json 里带上 webSocketDebuggerUrl
+        for _ in range(40):
+            time.sleep(0.5)
+            try:
+                for t in httpx.get(f"{base}/json", timeout=5.0).json():
+                    if t.get("id") == target_id and t.get("webSocketDebuggerUrl"):
+                        log.info("已开临时标签页 %s", target_id[:12])
+                        return target_id, t["webSocketDebuggerUrl"]
+            except Exception:  # noqa: BLE001 — 轮询期间的抖动忽略
+                continue
+
+        self._close_temp_tab(target_id)
+        raise CDPError("新标签页开出来了，但 20 秒内没拿到它的调试地址。")
+
+    def _close_temp_tab(self, target_id: str) -> None:
+        """关掉临时标签页。失败只记日志——图已经拿到了，不该因为收尾失败而报错。"""
+        if not target_id:
+            return
+        try:
+            base = f"http://127.0.0.1:{self.port}"
+            browser_ws = httpx.get(f"{base}/json/version", timeout=5.0).json()[
+                "webSocketDebuggerUrl"
+            ]
+            with CDPSession(browser_ws) as browser:
+                browser.command("Target.closeTarget", {"targetId": target_id})
+            log.info("临时标签页已关闭")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("临时标签页没关掉（%s），手动关一下：%s", target_id[:12], exc)
+
+    def _wait_for_composer(self, sess: CDPSession) -> None:
+        """等新对话页面真正可用。
+
+        只等"输入框出现"是不够的：composer 的候选选择器里有
+        `div[contenteditable='true']` 和 `textarea` 这种很宽的，ChatGPT 这类
+        SPA 在 React 水合完成之前就可能匹配上，于是这里立刻返回、下一步却发现
+        发送按钮还没渲染出来，报成"找不到发送按钮"。所以要等到
+        readyState complete + 输入框在 + 连续两次都还在，再往下走。
+        """
+        stable = 0
+        for _ in range(60):
+            time.sleep(0.5)
+            ready = sess.evaluate(
+                f"""
+                (() => {{
+                    if (document.readyState !== 'complete') return false;
+                    const sels = {json.dumps(_SELECTORS["composer"])};
+                    return sels.some(s => document.querySelector(s));
+                }})()
+                """
+            )
+            if ready:
+                stable += 1
+                if stable >= 2:
+                    time.sleep(1.0)  # 再给 React 一点时间把发送按钮挂上
+                    return
+            else:
+                stable = 0
+
+        raise CDPError(
+            "新开的 ChatGPT 页面 30 秒内没进入可用状态。\n"
+            "可能是这个 profile 的登录态失效了，或者页面卡在加载中。"
+        )
 
     # ---------- 内部步骤 ----------
 
@@ -221,25 +342,59 @@ class ChatGPTImageGenerator:
         if not ok:
             raise CDPError("填写提示词失败：输入框在填写瞬间消失了。")
 
-        time.sleep(0.6)  # 等 React 状态更新，发送按钮才会变可点
-
-        clicked = sess.evaluate(
-            f"""
-            (() => {{
-                const sels = {json.dumps(_SELECTORS["send_button"])};
-                for (const s of sels) {{
-                    const btn = document.querySelector(s);
-                    if (btn && !btn.disabled) {{ btn.click(); return true; }}
-                }}
-                return false;
-            }})()
-            """
-        )
-        if not clicked:
-            raise CDPError(
-                "找不到可点击的发送按钮（或按钮是禁用状态）。\n"
-                "提示词可能没真正填进去。手动看一眼那个标签页。"
+        # 轮询等按钮变可点。不能只 sleep 一个固定时长——快的时候浪费，
+        # 慢的时候（页面刚开、网络抖动）就误判成"按钮不存在"
+        clicked = False
+        for _ in range(30):
+            time.sleep(0.5)
+            clicked = bool(
+                sess.evaluate(
+                    f"""
+                    (() => {{
+                        const sels = {json.dumps(_SELECTORS["send_button"])};
+                        for (const s of sels) {{
+                            const btn = document.querySelector(s);
+                            if (btn && !btn.disabled) {{ btn.click(); return true; }}
+                        }}
+                        return false;
+                    }})()
+                    """
+                )
             )
+            if clicked:
+                break
+
+        if not clicked:
+            # 兜底：ChatGPT 支持回车发送。按钮改版或一直禁用时还有这条路。
+            log.warning("发送按钮点不动，改用回车发送")
+            for event_type in ("keyDown", "char", "keyUp"):
+                params: dict[str, Any] = {
+                    "type": event_type,
+                    "key": "Enter",
+                    "code": "Enter",
+                    "windowsVirtualKeyCode": 13,
+                    "nativeVirtualKeyCode": 13,
+                }
+                if event_type == "char":
+                    params["text"] = "\r"
+                sess.command("Input.dispatchKeyEvent", params)
+            time.sleep(1.0)
+            # 输入框被清空 = 确实发出去了
+            still_there = sess.evaluate(
+                f"""
+                (() => {{
+                    const el = document.querySelector({json.dumps(composer)});
+                    return el ? (el.value ?? el.innerText ?? '').trim().length > 0 : false;
+                }})()
+                """
+            )
+            if still_there:
+                raise CDPError(
+                    "提示词填进去了，但发送按钮点不动、回车也没发出去。\n"
+                    "手动打开那个 ChatGPT 标签页看一眼：是不是没登录、额度用尽，\n"
+                    f"或者改版了（那就更新 {__file__} 里的 _SELECTORS['send_button']）。"
+                )
+
         log.info("提示词已发送，等待出图（最多 %d 秒）", self.wait_timeout)
 
     def _image_urls(self, sess: CDPSession) -> set[str]:

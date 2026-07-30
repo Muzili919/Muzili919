@@ -203,8 +203,8 @@ def test_probe_succeeds(chrome_with_cdp):
 
 
 @requires_chromium
-def test_generate_image_end_to_end(chrome_with_cdp):
-    """完整链路：填提示词 → 点发送 → 等出图 → 页面内下载 → 返回二进制。
+def test_generate_image_end_to_end(chrome_with_cdp, server):
+    """完整链路：开临时标签页 → 填提示词 → 点发送 → 等出图 → 页面内下载 → 返回二进制。
 
     这条用例同时验证了几件事：
       - execCommand 插入文本能触发页面状态更新（否则发送按钮是禁用的）
@@ -212,7 +212,10 @@ def test_generate_image_end_to_end(chrome_with_cdp):
       - 页面内 fetch + FileReader 转 base64 的回传路径是通的
     """
     gen = ChatGPTImageGenerator(
-        port=chrome_with_cdp, url_contains="fake_chatgpt", wait_timeout=30
+        port=chrome_with_cdp,
+        url_contains="fake_chatgpt",
+        wait_timeout=30,
+        new_chat_url=f"{server}/fake_chatgpt.html",
     )
     data = gen.generate("画一张测试图，扁平插画风格")
 
@@ -225,12 +228,15 @@ def test_generate_image_end_to_end(chrome_with_cdp):
 
 
 @requires_chromium
-def test_generate_then_quality_gate(chrome_with_cdp):
+def test_generate_then_quality_gate(chrome_with_cdp, server):
     """生图产物应当能通过质量闸——两个模块的衔接是否对得上。"""
     from toutiao_publisher.images import quality
 
     gen = ChatGPTImageGenerator(
-        port=chrome_with_cdp, url_contains="fake_chatgpt", wait_timeout=30
+        port=chrome_with_cdp,
+        url_contains="fake_chatgpt",
+        wait_timeout=30,
+        new_chat_url=f"{server}/fake_chatgpt.html",
     )
     data = gen.generate("测试")
     verdict = quality.check(
@@ -336,6 +342,40 @@ def test_publish_dry_run_does_not_publish(server, tmp_path):
     assert result.ok
     assert "演练" in result.detail
     assert (tmp_path / "dry-run-preview.png").exists(), "演练模式应留下预览截图"
+
+
+@requires_chromium
+def test_first_publish_checkbox_is_ticked_and_left_alone(server, tmp_path):
+    """「头条首发」没勾就补勾，已经勾上就别动。
+
+    第二个断言才是重点：这个勾关系到 72 小时额外激励分成，页面多数时候默认
+    就是勾上的，"不看状态直接点一下"会把它取消掉——是纯亏。
+    """
+    from playwright.sync_api import sync_playwright
+
+    from toutiao_publisher.publish.toutiao import ToutiaoPublisher
+
+    publisher = ToutiaoPublisher(_FakeConfig(tmp_path, {"publish.first_publish": True}))
+    checked_js = "!!document.querySelector('label.checkbot-item.byte-checkbox-checked')"
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
+            executable_path=CHROMIUM, args=_LAUNCH_ARGS, headless=True
+        )
+        try:
+            page = browser.new_page()
+            page.goto(f"{server}/fake_toutiao.html", wait_until="domcontentloaded")
+            publisher._dismiss_overlays(page)  # 遮罩不关掉，任何点击都点不到
+
+            assert page.evaluate(checked_js) is False, "仿真页应从未勾选状态开始"
+
+            publisher._ensure_first_publish(page)
+            assert page.evaluate(checked_js) is True, "未勾选时应补勾上"
+
+            publisher._ensure_first_publish(page)
+            assert page.evaluate(checked_js) is True, "已勾选时不能再点，否则等于取消"
+        finally:
+            browser.close()
 
 
 @requires_chromium

@@ -29,9 +29,21 @@ _SELECTORS = {
         ".syl-editor [contenteditable='true']",
         "div[contenteditable='true']",
     ],
+    # 工具栏的「图片」入口。头条的 file input 是点了它之后才挂到 DOM 上的，
+    # 所以必须先点这个，不能直接找 input[type=file]
+    "image_entry": [
+        "text=图片",
+        "div[class*='tool'] :text('图片')",
+    ],
     "image_upload_input": [
         "input[type='file'][accept*='image']",
         "input[type='file']",
+    ],
+    # 上传后的缩略图，出现即代表文件已被接收
+    "image_thumb": [
+        ".image-list img",
+        "img[src*='image_upload']",
+        "[class*='image-list'] img",
     ],
     "publish_button": [
         "button:has-text('发布')",
@@ -166,6 +178,10 @@ class ToutiaoPublisher:
                 if image_path:
                     self._upload_image(page, image_path)
 
+                # 放在演练分支之前：演练截图必须反映真正会发出去的状态，
+                # 包括这个勾选框。放到点发布那一步的话，演练就看不到它了。
+                self._ensure_first_publish(page)
+
                 if dry_run:
                     shot = self.cfg.state_dir / "dry-run-preview.png"
                     page.screenshot(path=str(shot), full_page=True)
@@ -279,24 +295,187 @@ class ToutiaoPublisher:
             )
 
     def _upload_image(self, page: Page, image_path: Path) -> None:
-        log.info("上传配图：%s", image_path.name)
-        try:
-            upload = self._find(page, "image_upload_input", timeout=10000)
-            upload.set_input_files(str(image_path))
-        except PublishError:
-            # 有些页面把 file input 藏起来了，locator 认为不可见。直接用 DOM 层接口。
-            log.warning("常规方式找不到上传控件，改用隐藏 input 兜底")
-            handle = page.query_selector("input[type='file']")
-            if handle is None:
-                raise PublishError(
-                    "页面上完全没有文件上传控件，配图无法上传。\n"
-                    "可以先把 config.yaml 里 image.enabled 设为 false，改发纯文字。"
-                ) from None
-            handle.set_input_files(str(image_path))
+        """上传配图。
 
-        # 等图片上传完成——等到页面里出现预览缩略图
-        page.wait_for_timeout(5000)
-        log.info("配图上传完成")
+        头条这条路有三个不直观的地方，少一个都传不上去：
+          1. `input[type=file]` 平时不在 DOM 里，得先点工具栏的「图片」把弹窗叫出来
+          2. 那个 input 是隐藏的，但 set_input_files 对隐藏 input 照样有效，
+             不用去接 filechooser 事件
+          3. 弹窗底部的「确定」必须点。页面上有多个叫「确定」的按钮，
+             要的是最后那个（底部 footer 那个），点错了图片不会挂上去
+        图片最终挂在编辑器**下方的独立图区**，不在 .ProseMirror 里面，
+        所以校验不能去正文里找。
+        """
+        log.info("上传配图：%s", image_path.name)
+
+        # 1. 叫出上传弹窗
+        entry = self._find(page, "image_entry", timeout=10000)
+        entry.click()
+        page.wait_for_timeout(800)
+
+        # 2. 塞文件。隐藏 input 用 locator.set_input_files 可以直接设，
+        #    但要用 wait_for(state="attached")——默认的 visible 等不到隐藏元素
+        upload = None
+        for sel in _SELECTORS["image_upload_input"]:
+            loc = page.locator(sel).first
+            try:
+                loc.wait_for(state="attached", timeout=5000)
+                upload = loc
+                break
+            except Exception:  # noqa: BLE001 — 试下一个候选
+                continue
+        if upload is None:
+            shot = self.cfg.state_dir / "image-upload-failed.png"
+            page.screenshot(path=str(shot), full_page=True)
+            raise PublishError(
+                "点了「图片」但弹窗里没有文件上传控件。\n"
+                f"当时的页面截图：{shot}\n"
+                "头条改版的话，更新 _SELECTORS['image_entry'] / ['image_upload_input']。\n"
+                "急着发就先把 config.yaml 的 image.enabled 设成 false，改发纯文字。"
+            )
+        upload.set_input_files(str(image_path))
+
+        # 3. 等缩略图出现，确认文件被接收了
+        thumb_ok = False
+        for sel in _SELECTORS["image_thumb"]:
+            try:
+                page.locator(sel).first.wait_for(state="visible", timeout=20000)
+                thumb_ok = True
+                break
+            except Exception:  # noqa: BLE001
+                continue
+        if not thumb_ok:
+            log.warning("没等到上传缩略图，仍然尝试点确定")
+
+        # 4. 点弹窗里的「确定」。
+        #
+        # 页面上叫「确定」的按钮不止一个，而且这个按钮是**加了图之后才出现**的，
+        # 加图之前一个都没有（实测）。所以既不能按出现顺序取（.last 会抓到别处
+        # 那个，失败时报的是"element is not enabled"，看着像上传没完成，
+        # 实际是点错了按钮），也不能一上来就找。
+        #
+        # 定位方式：从图片列表往上走，第一个同时含可用「确定」的祖先就是这个弹窗。
+        # 顺带解决了"上传还在进行中按钮暂时禁用"——要求 !disabled，配合轮询等它就绪。
+        click_js = """() => {
+            const list = document.querySelector(".image-list, [class*='image-list']");
+            if (!list) return 'no-list';
+            let node = list;
+            while (node && node !== document.body) {
+                const btn = Array.from(node.querySelectorAll('button')).find(
+                    b => (b.innerText || '').trim() === '确定' && !b.disabled
+                );
+                if (btn) { btn.click(); return 'clicked'; }
+                node = node.parentElement;
+            }
+            return 'no-button';
+        }"""
+
+        outcome = "no-list"
+        for _ in range(40):  # 最多等 20 秒，覆盖大图上传
+            outcome = page.evaluate(click_js)
+            if outcome == "clicked":
+                break
+            page.wait_for_timeout(500)
+
+        if outcome != "clicked":
+            shot = self.cfg.state_dir / "image-confirm-failed.png"
+            page.screenshot(path=str(shot), full_page=True)
+            raise PublishError(
+                f"上传弹窗里没找到可点的「确定」（{outcome}）。\n"
+                f"当时的页面截图：{shot}\n"
+                "'no-list' = 缩略图没出来，文件可能没被接收；\n"
+                "'no-button' = 图在弹窗里但确认按钮一直禁用或改名了。"
+            )
+
+        page.wait_for_timeout(1500)
+
+        # 5. 校验真的挂上了。图区在编辑器下方，用张数文案或图片 src 判断
+        attached = page.evaluate(
+            """() => {
+                if (/共\\s*\\d+\\s*张/.test(document.body.innerText)) return true;
+                return !!document.querySelector("img[src*='image_upload'], .image-list img");
+            }"""
+        )
+        if not attached:
+            shot = self.cfg.state_dir / "image-attach-failed.png"
+            page.screenshot(path=str(shot), full_page=True)
+            raise PublishError(
+                "点完确定了，但页面上看不出图片已挂到正文。\n"
+                f"当时的页面截图：{shot}\n"
+                "宁可中止也不发一条本该带图却没图的内容——确认截图后决定要不要\n"
+                "把 image.enabled 设成 false 改发纯文字。"
+            )
+        log.info("配图已挂上")
+
+    def _ensure_first_publish(self, page: Page) -> None:
+        """确保「头条首发」是勾上的。
+
+        勾上代表 72 小时内只在头条发，能拿额外激励分成。空白正文时它默认就是
+        勾上的，但页面状态一变（实测：挂上配图之后那片选项区会重排）它可能变回
+        未勾——不检查就白丢分成。
+
+        必须**先查状态再决定点不点**：盲点一下会把本来勾上的取消掉。
+        也不能去点隐藏的 input 或那行文字，实测都是在取消而不是勾选，
+        要点的是外层 label。
+        """
+        if not bool(self.cfg.get("publish.first_publish", True)):
+            log.info("配置里关掉了「头条首发」，不干预")
+            return
+
+        probe = """() => {
+            const labels = Array.from(document.querySelectorAll('label'));
+            const el = labels.find(l => (l.innerText || '').includes('头条首发'));
+            if (!el) return {found: false};
+            return {found: true, checked: /byte-checkbox-checked/.test(el.className)};
+        }"""
+
+        state = page.evaluate(probe)
+        if not state.get("found"):
+            log.warning("页面上没找到「头条首发」，跳过（头条改版？）")
+            return
+        if state.get("checked"):
+            log.info("「头条首发」已勾选，不动它")
+            return
+
+        log.info("「头条首发」未勾选，点上")
+        # 真实结构（2026-07 实测）：
+        #   label.byte-checkbox.checkbot-item
+        #     └ span.byte-checkbox-wrapper
+        #         ├ div.byte-checkbox-mask        ← 这个才是点击靶
+        #         └ span.byte-checkbox-inner-text  文字
+        # 点 label 中心会落在文字上，不生效；点里面隐藏的 input 反而是取消。
+        # 所以优先点 mask，找不到才退回点 label 左端（勾选框大致在那儿）。
+        label = page.locator("label.checkbot-item").filter(has_text="头条首发").first
+        try:
+            mask = label.locator(".byte-checkbox-mask").first
+            if mask.count() > 0:
+                mask.click(timeout=5000)
+            else:
+                box = label.bounding_box()
+                if not box:
+                    log.warning("「头条首发」拿不到位置，按未勾选继续")
+                    return
+                page.mouse.click(box["x"] + 8, box["y"] + box["height"] / 2)
+            page.wait_for_timeout(600)
+        except Exception as exc:  # noqa: BLE001 — 分成是加分项，点不上不该阻断发布
+            log.warning("「头条首发」点不上（%s），按未勾选继续", exc)
+            return
+
+        if page.evaluate(probe).get("checked"):
+            log.info("「头条首发」已勾上")
+            return
+
+        # 2026-07-30 实测：这个勾在 Playwright 驱动的浏览器里点不动。
+        # 试过 JS 点隐藏 input / .byte-checkbox-mask / label / wrapper，
+        # 以及 Playwright 对 mask 的真实点击，五种全都不改变状态。
+        # 跟"点发布按钮可能点不动"应该是同一个根因：头条对合成输入事件做了过滤，
+        # 要真点得动多半得走 OS 级鼠标（pyautogui 那类）。
+        log.warning(
+            "「头条首发」点不上——头条大概率过滤了合成点击事件。\n"
+            "        影响：这一条拿不到 72 小时独发的额外激励分成，发布本身不受影响。\n"
+            "        想要的话：在你自己的浏览器里手动勾一次（头条会记住这个偏好），\n"
+            "        然后重跑演练，看这行日志是否变成「已勾选，不动它」。"
+        )
 
     def _click_publish(self, page: Page) -> PublishResult:
         # 上传配图、输入正文的过程里抽屉可能又弹回来，点之前再清一次

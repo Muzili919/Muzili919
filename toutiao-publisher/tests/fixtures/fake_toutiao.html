@@ -2,54 +2,153 @@
 <!--
   仿真头条微头条发布页，用于集成测试。
 
-  只复刻 publish/toutiao.py 真正依赖的 DOM 特征：
-    - div.ProseMirror[contenteditable]  正文编辑器
-    - input[type=file]                 配图上传（真实页面里是隐藏的，这里也隐藏，
-                                        用来验证生产代码的隐藏 input 兜底逻辑）
-    - button 含"发布"文案
-    - 点击后出现"发布成功"
+  复刻 publish/toutiao.py 真正依赖的 DOM 特征和**交互行为**——后者才是关键，
+  静态 DOM 相似但行为不同的话，测试全过而线上照样挂（2026-07-30 就这么栽过一次：
+  旧版这个页面一开始就把 input[type=file] 放在 DOM 里，于是"直接找上传控件"的
+  代码在测试里一路绿灯，真实页面上却根本找不到——因为头条只在点了「图片」之后
+  才把它挂上去）。
+
+  复刻的行为：
+    - 开场弹一层 .byte-drawer-mask 整页遮罩（真实页面的「发文助手」抽屉），
+      不关掉的话后面所有点击都会被它拦住
+    - 编辑器里有占位提示节点，空的时候有文字（校验字数时必须剔掉它）
+    - input[type=file] **点了「图片」才存在**，而且是隐藏的
+    - 页面上有两个「确定」，起作用的是最后那个（弹窗底部那个）
+    - 确认后出现"共 N 张"，图片挂在编辑器**外面**
+    - 点"发布"后延迟出现"发布成功"
 -->
 <html lang="zh-CN">
-<head><meta charset="utf-8"><title>发布微头条</title></head>
+<head><meta charset="utf-8"><title>发布微头条</title>
+<style>
+  .byte-drawer-mask { position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:1000; }
+  .byte-drawer-wrapper { position:fixed; right:0; top:0; width:320px; height:100%;
+                         background:#fff; z-index:1001; padding:16px; }
+  .ph { color:#bbb; pointer-events:none; }
+  #img-dialog { border:1px solid #ccc; padding:12px; margin:8px 0; }
+</style>
+</head>
 <body>
+
+<!-- 「发文助手」抽屉：整页遮罩 + 关闭按钮（按钮层级在遮罩之上，能点到） -->
+<div class="byte-drawer-mask"></div>
+<div class="byte-drawer-wrapper">
+  <p>发文助手</p>
+  <button id="assistant-ok">我知道了</button>
+</div>
+
 <div id="app">
   <div class="syl-editor">
     <div class="ProseMirror" contenteditable="true"
-         style="border:1px solid #ddd;min-height:120px;padding:12px"></div>
+         style="border:1px solid #ddd;min-height:120px;padding:12px"
+      ><span class="ph" data-placeholder="true">有什么新鲜事想告诉大家？</span></div>
   </div>
 
-  <!-- 真实页面把 file input 藏起来，用自定义按钮触发 -->
-  <input type="file" accept="image/*" style="display:none">
-  <div id="upload-preview"></div>
+  <!-- 工具栏：真实页面的 file input 是点了「图片」之后才出现的 -->
+  <div class="tool-bar">
+    <span id="img-entry">图片</span>
+    <span>表情</span>
+    <span>话题</span>
+  </div>
+
+  <!-- 另一个「确定」：用来验证生产代码取的是 .last 而不是第一个 -->
+  <div class="decl-box">
+    <span>声明</span><button>确定</button>
+  </div>
+
+  <div id="attached"></div>
+
+  <!-- 「头条首发」：复刻真实结构（2026-07 实测）。勾选状态是 label 上的
+       byte-checkbox-checked class；真正的点击靶是 div.byte-checkbox-mask，
+       点文字或点里面隐藏的 input 都不算。刻意从**未勾选**开始，逼生产代码补勾。 -->
+  <label class="byte-checkbox checkbot-item checkbox-with-tip">
+    <span class="byte-checkbox-wrapper">
+      <input type="checkbox" style="display:none">
+      <div class="byte-checkbox-mask" style="width:14px;height:14px;border:1px solid #999;display:inline-block"></div>
+      <span class="byte-checkbox-inner-text">头条首发</span>
+    </span>
+  </label>
 
   <button id="publish-btn">发布</button>
   <div id="result"></div>
 </div>
 
 <script>
-  const editor  = document.querySelector('.ProseMirror');
-  const fileIn  = document.querySelector('input[type=file]');
-  const preview = document.getElementById('upload-preview');
-  const result  = document.getElementById('result');
+  const editor = document.querySelector('.ProseMirror');
+  const result = document.getElementById('result');
+  const attached = document.getElementById('attached');
 
-  fileIn.addEventListener('change', () => {
-    if (fileIn.files.length) {
-      const div = document.createElement('div');
-      div.className = 'thumb';
-      div.textContent = '已上传：' + fileIn.files[0].name;
-      preview.appendChild(div);
-    }
+  document.getElementById('assistant-ok').addEventListener('click', () => {
+    document.querySelectorAll('.byte-drawer-mask, .byte-drawer-wrapper')
+            .forEach(n => n.remove());
+  });
+
+  // 输入时清掉占位节点，跟真实富文本编辑器一致
+  editor.addEventListener('input', () => {
+    const ph = editor.querySelector('.ph');
+    if (ph && editor.innerText.replace(ph.innerText, '').trim() !== '') ph.remove();
+  });
+
+  // 点「图片」才创建隐藏 input + 弹窗，这是本页最要紧的一条行为
+  document.getElementById('img-entry').addEventListener('click', () => {
+    if (document.getElementById('img-dialog')) return;
+
+    const dialog = document.createElement('div');
+    dialog.id = 'img-dialog';
+    dialog.innerHTML = `
+      <p>上传图片</p>
+      <div class="image-list"></div>
+      <div class="dialog-footer"><button id="dialog-ok">确定</button></div>`;
+    document.getElementById('app').appendChild(dialog);
+
+    const fileIn = document.createElement('input');
+    fileIn.type = 'file';
+    fileIn.accept = 'image/*';
+    fileIn.style.display = 'none';   // 隐藏，但 set_input_files 照样能设
+    dialog.appendChild(fileIn);
+
+    fileIn.addEventListener('change', () => {
+      if (!fileIn.files.length) return;
+      const img = document.createElement('img');
+      img.src = '/oaiusercontent/generated.png';
+      img.width = 80;
+      dialog.querySelector('.image-list').appendChild(img);
+    });
+
+    // 弹窗底部的「确定」：把图片挂到编辑器外面，并显示张数
+    document.getElementById('dialog-ok').addEventListener('click', () => {
+      const n = dialog.querySelectorAll('.image-list img').length;
+      if (n === 0) return;
+      const img = document.createElement('img');
+      img.src = '/image_upload/attached.png';
+      img.width = 80;
+      attached.appendChild(img);
+      const label = document.createElement('div');
+      label.textContent = '共 ' + n + ' 张';
+      attached.appendChild(label);
+      dialog.remove();
+    });
+  });
+
+  // 勾选状态挂在 label 的 class 上，点 label 才切换
+  // 只有点 .byte-checkbox-mask 才切换状态——跟真实页面一致。
+  // 点文字（.byte-checkbox-inner-text）什么都不会发生，这正是生产代码
+  // 之前"点了 label 中心却不生效"的原因，留在这里当回归护栏。
+  const firstPub = document.querySelector('label.checkbot-item');
+  firstPub.querySelector('.byte-checkbox-mask').addEventListener('click', (e) => {
+    // 不阻止的话点击会连带激活里面的隐藏 input，冒泡回来再切一次，等于没点
+    e.preventDefault();
+    e.stopPropagation();
+    firstPub.classList.toggle('byte-checkbox-checked');
   });
 
   document.getElementById('publish-btn').addEventListener('click', () => {
-    if (editor.innerText.trim() === '') {
-      result.textContent = '正文不能为空';
-      return;
-    }
-    // 记录实际收到的内容，供测试断言
+    const ph = editor.querySelector('.ph');
+    const text = (ph ? editor.innerText.replace(ph.innerText, '') : editor.innerText).trim();
+    if (text === '') { result.textContent = '正文不能为空'; return; }
     window.__published = {
-      content: editor.innerText,
-      images: preview.querySelectorAll('.thumb').length
+      content: text,
+      images: attached.querySelectorAll('img').length,
+      firstPublish: firstPub.classList.contains('byte-checkbox-checked')
     };
     setTimeout(() => { result.textContent = '发布成功'; }, 500);
   });

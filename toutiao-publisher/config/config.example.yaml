@@ -64,6 +64,10 @@ publish:
   type_delay_ms: [40, 120]
   # 发布后确认成功的等待秒数
   confirm_timeout: 30
+  # 勾「头条首发」（声明 72 小时内只在头条发，换额外激励分成）。
+  # 页面默认多数时候是勾上的，但状态会随页面变化被重置，所以代码会主动检查补勾。
+  # 同一条内容还要同步发到别的平台的话，改成 false。
+  first_publish: true
   # 指定浏览器可执行文件。留空用 Playwright 自带的那份，一般不用改。
   # 想复用日常的 Chrome 才需要填，例如：
   #   /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
