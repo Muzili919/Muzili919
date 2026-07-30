@@ -33,13 +33,18 @@ if curl -s --max-time 2 "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1;
 fi
 
 echo "启动 Chrome，调试端口 ${PORT}，配置目录 ${PROFILE_DIR}"
-"${CHROME}" \
+# nohup + disown：Chrome 必须活得比这个脚本的调用者长。
+# 只写 `&` 的话，从别的脚本或自动化里调用时，调用方的 shell 一退出就给整个
+# 进程组发 SIGHUP，Chrome 跟着死——手动在终端里跑看不出问题（终端一直开着），
+# 一放进自动化就变成"端口刚才还在，现在没了"。
+nohup "${CHROME}" \
   --remote-debugging-port="${PORT}" \
   --user-data-dir="${PROFILE_DIR}" \
   --no-first-run \
   --no-default-browser-check \
   "https://chatgpt.com" \
   >/dev/null 2>&1 &
+disown
 
 # 等端口起来
 for _ in $(seq 1 20); do
