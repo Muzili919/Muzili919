@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "toutiao-publisher"
+version = "0.1.0"
+description = "今日头条微头条自动发布：RSS → AI 选题成文 → 生图 → 发布"
+requires-python = ">=3.10,<3.14"
+# 依赖单一来源在 requirements.txt（带版本锁和逐条注释），这里不重复一份，
+# 免得两处漂移。setup.sh 先 install -r，再 install -e . --no-deps。
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

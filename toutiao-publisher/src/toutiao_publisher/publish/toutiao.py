@@ -43,7 +43,38 @@ _SELECTORS = {
         "input[placeholder*='手机号']",
         "text=扫码登录",
     ],
+    # 发布页会自动弹「发文助手」抽屉，是一层整页遮罩，盖住之后任何点击都落不到页面上
+    "overlay": [
+        ".byte-drawer-mask",
+        ".byte-drawer-wrapper",
+    ],
 }
+
+
+def _visible_len(text: str) -> int:
+    """去掉所有空白后的字数。
+
+    比对编辑器内容时不能按原样长度算：我们输入的段间空行、编辑器自己的换行处理，
+    两边对不上，会把正常情况误判成异常。
+    """
+    return len("".join(text.split()))
+
+
+def _editor_text(editor) -> str:
+    """取编辑器里真正的正文，剔除占位提示。
+
+    空编辑器里那句"有什么新鲜事想告诉大家？"是 DOM 里的真实节点，不剔掉的话
+    既会让"清空后有残留"误报，又会虚增字数把比对容差吃掉。
+    """
+    return editor.evaluate(
+        """el => {
+            const clone = el.cloneNode(true);
+            clone.querySelectorAll(
+                '[data-placeholder],[class*=placeholder],[class*=Placeholder]'
+            ).forEach(n => n.remove());
+            return (clone.textContent || '').trim();
+        }"""
+    )
 
 
 class PublishError(RuntimeError):
@@ -129,6 +160,7 @@ class ToutiaoPublisher:
                 page.wait_for_timeout(3000)
 
                 self._assert_logged_in(page)
+                self._dismiss_overlays(page)
                 self._type_content(page, content)
 
                 if image_path:
@@ -178,18 +210,73 @@ class ToutiaoPublisher:
             f"头条改版了的话，更新 {__file__} 里的 _SELECTORS['{key}']。"
         )
 
+    def _dismiss_overlays(self, page: Page) -> None:
+        """关掉「发文助手」抽屉。
+
+        发布页会自动弹出它，而它带一层整页遮罩——不关掉的话后面点编辑器、点发布
+        全都落在遮罩上，症状是"点了没反应"，而且不报错，极难查。
+        """
+        for name in ("我知道了", "知道了"):
+            try:
+                btn = page.get_by_role("button", name=name).first
+                if btn.is_visible(timeout=800):
+                    btn.click()
+                    page.wait_for_timeout(300)
+                    log.info("已关闭发文助手抽屉（点「%s」）", name)
+            except Exception:  # noqa: BLE001 — 没弹出来是常态
+                pass
+
+        # 兜底：按钮文案变了也要能脱身，直接把遮罩节点摘掉
+        removed = page.evaluate(
+            """(sels) => {
+                let n = 0;
+                for (const s of sels) {
+                    for (const el of document.querySelectorAll(s)) { el.remove(); n++; }
+                }
+                return n;
+            }""",
+            _SELECTORS["overlay"],
+        )
+        if removed:
+            log.info("兜底移除了 %d 个遮罩节点", removed)
+
     def _type_content(self, page: Page, content: str) -> None:
         editor = self._find(page, "editor")
         editor.click()
         page.wait_for_timeout(500)
 
-        log.info("开始输入正文，%d 字", len(content))
+        # 清空再输入。发布页会把上次没发的草稿自动恢复到编辑器里，
+        # 直接输入等于追加在旧草稿后面，会把上次的残稿一起发出去。
+        page.keyboard.press("ControlOrMeta+A")
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(300)
+        leftover = _editor_text(editor)
+        if leftover:
+            log.warning("清空后编辑器仍有残留：%s", leftover[:60])
+
+        log.info("开始输入正文，%d 字", _visible_len(content))
         lo, hi = self.delay_range
         for ch in content:
             page.keyboard.type(ch, delay=random.uniform(lo, hi))
 
         page.wait_for_timeout(1000)
-        log.info("正文输入完成")
+
+        # 正文里的 #标签# 会拉起话题下拉框，它会一直浮在页面上挡住发布按钮，
+        # 最后那个标签也停在"未确认插入"的状态。Esc 关掉它，正文本身不受影响。
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(300)
+
+        want = _visible_len(content)
+        got = _visible_len(_editor_text(editor))
+        log.info("正文输入完成，编辑器内实际 %d 字（预期 %d）", got, want)
+        # 差太多说明要么有草稿混进来，要么输入被前端吞了，两种都不该带着往下发
+        if abs(got - want) > max(15, want // 20):
+            raise PublishError(
+                f"编辑器内容与预期不符：应为 {want} 字，实际 {got} 字。\n"
+                f"可能是草稿没清干净，或者输入被富文本编辑器吞掉了。\n"
+                f"为避免发出残缺或混了旧草稿的内容，这里中止。\n"
+                f"编辑器现有内容开头：{_editor_text(editor)[:80]}"
+            )
 
     def _upload_image(self, page: Page, image_path: Path) -> None:
         log.info("上传配图：%s", image_path.name)
@@ -212,6 +299,9 @@ class ToutiaoPublisher:
         log.info("配图上传完成")
 
     def _click_publish(self, page: Page) -> PublishResult:
+        # 上传配图、输入正文的过程里抽屉可能又弹回来，点之前再清一次
+        self._dismiss_overlays(page)
+
         btn = self._find(page, "publish_button")
         log.info("点击发布")
         btn.click()

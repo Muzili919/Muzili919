@@ -101,18 +101,18 @@ class StateStore:
         return records
 
     def last_success_at(self) -> datetime | None:
-        """最近一次成功发布的时间。健康检查用。"""
+        """最近一次**真实**发布的时间。健康检查用。"""
         for rec in self.load_runs():
-            if rec.get("status") == STATUS_SUCCESS:
+            if _is_real_publish(rec):
                 return _parse_dt(rec.get("started_at"))
         return None
 
     def posts_today(self) -> int:
-        """今天已成功发布几条。"""
+        """今天已**真实**发布几条。"""
         today = datetime.now().date()
         count = 0
         for rec in self.load_runs():
-            if rec.get("status") != STATUS_SUCCESS:
+            if not _is_real_publish(rec):
                 continue
             started = _parse_dt(rec.get("started_at"))
             if started and started.date() == today:
@@ -173,6 +173,19 @@ class StateStore:
         self.published_file.write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+
+
+def _is_real_publish(rec: dict[str, Any]) -> bool:
+    """这条记录是否代表"真的发出去了一条"。
+
+    演练也记 success——流程确实整条跑通了，那是它该记的。但它一个字都没发出去，
+    所以两处绝不能把它算进来：
+      - 当天配额：算进去的话，"先演练看效果、满意再 --live"这个正常顺序
+        第二步就会被自己的上限挡住，而且理由看起来还很合理（"今天已发 1 条"）。
+      - 停摆告警：算进去的话，一次演练就能让"26 小时没发布"的告警永久闭嘴，
+        而这个告警正是整套东西存在的理由。
+    """
+    return rec.get("status") == STATUS_SUCCESS and not rec.get("dry_run", False)
 
 
 def _parse_dt(value: Any) -> datetime | None:

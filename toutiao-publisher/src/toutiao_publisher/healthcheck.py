@@ -84,13 +84,16 @@ def _check_notifier(notifier: Notifier) -> str:
     if not notifier.enabled:
         raise RuntimeError(
             "没有配置任何告警渠道。失败时你收不到通知，等于白做监控。\n"
-            "    修复：在 .env 里填 SERVERCHAN_SENDKEY 或 DINGTALK_WEBHOOK。"
+            "    修复：在 .env 里填 SERVERCHAN_SENDKEY、DINGTALK_WEBHOOK，\n"
+            "    或者 SMTP_HOST / SMTP_USER / SMTP_PASS / EMAIL_TO（邮件不用注册新服务，最快）。"
         )
     channels = []
     if notifier.serverchan_key:
         channels.append("Server酱")
     if notifier.dingtalk_webhook:
         channels.append("钉钉")
+    if notifier.email_enabled:
+        channels.append(f"邮件({notifier.email_to})")
     return f"OK — 已启用：{', '.join(channels)}"
 
 

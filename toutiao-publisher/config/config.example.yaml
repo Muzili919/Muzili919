@@ -29,6 +29,11 @@ image:
   enabled: true
   # CDP 连本地 Chrome。需要 Chrome 以 --remote-debugging-port=9230 启动，
   # 见 scripts/launch_chrome.sh
+  #
+  # 机器上已经有别的调试实例时，先确认这个端口没被占。撞车不会报错：
+  # launch_chrome.sh 见端口已监听就说"已就绪"退出，然后生图跑去那个
+  # 浏览器里找 ChatGPT 标签页，永远找不到。换端口要两边一起改
+  # （CDP_PORT=xxxx ./scripts/launch_chrome.sh + 这里）。
   cdp_port: 9230
   # ChatGPT 页面地址，用于在众多标签页里认出目标 tab
   target_url_contains: "chatgpt.com"

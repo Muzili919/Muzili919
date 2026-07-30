@@ -178,20 +178,32 @@ def test_state_store_roundtrip(tmp_path):
     assert runs[0]["steps"][0]["name"] == "抓取 RSS"
 
 
+def _real_run(started_at: str, status: str = STATUS_SUCCESS) -> RunRecord:
+    """一条"真发出去了"的记录。dry_run 默认是 True，测真实发布必须显式关掉。"""
+    rec = RunRecord(started_at=started_at, dry_run=False)
+    rec.status = status
+    return rec
+
+
 def test_last_success_ignores_failures(tmp_path):
     store = StateStore(tmp_path)
 
-    failed = RunRecord(started_at=datetime.now().isoformat(timespec="seconds"))
-    failed.status = STATUS_FAILED
-    store.save_run(failed)
-
+    store.save_run(_real_run(datetime.now().isoformat(timespec="seconds"), STATUS_FAILED))
     assert store.last_success_at() is None
 
-    ok = RunRecord(started_at=datetime.now().isoformat(timespec="seconds"))
-    ok.status = STATUS_SUCCESS
-    store.save_run(ok)
-
+    store.save_run(_real_run(datetime.now().isoformat(timespec="seconds")))
     assert store.last_success_at() is not None
+
+
+def test_last_success_ignores_dry_runs(tmp_path):
+    """演练不能让停摆告警闭嘴——否则这个告警等于不存在。"""
+    store = StateStore(tmp_path)
+
+    rehearsal = RunRecord(started_at=datetime.now().isoformat(timespec="seconds"), dry_run=True)
+    rehearsal.status = STATUS_SUCCESS
+    store.save_run(rehearsal)
+
+    assert store.last_success_at() is None
 
 
 def test_run_record_defaults_to_failed():
@@ -202,15 +214,35 @@ def test_run_record_defaults_to_failed():
 def test_posts_today_counts_only_today(tmp_path):
     store = StateStore(tmp_path)
 
-    old = RunRecord(started_at=(datetime.now() - timedelta(days=2)).isoformat(timespec="seconds"))
-    old.status = STATUS_SUCCESS
-    store.save_run(old)
-
-    today = RunRecord(started_at=datetime.now().isoformat(timespec="seconds"))
-    today.status = STATUS_SUCCESS
-    store.save_run(today)
+    store.save_run(
+        _real_run((datetime.now() - timedelta(days=2)).isoformat(timespec="seconds"))
+    )
+    store.save_run(_real_run(datetime.now().isoformat(timespec="seconds")))
 
     assert store.posts_today() == 1
+
+
+def test_posts_today_ignores_dry_runs(tmp_path):
+    """演练不能占当天配额。
+
+    否则"先演练确认，满意再 --live"这个正常顺序会在第二步被自己的上限挡住，
+    而且报的理由看起来完全合理（"今天已发布 1 条"），根本想不到是演练造成的。
+    """
+    store = StateStore(tmp_path)
+
+    # 时间戳要错开：记录文件名就是时间戳，同一秒会互相覆盖，测不出"多条"
+    for offset in range(3):
+        rehearsal = RunRecord(
+            started_at=(datetime.now() - timedelta(minutes=offset)).isoformat(
+                timespec="seconds"
+            ),
+            dry_run=True,
+        )
+        rehearsal.status = STATUS_SUCCESS
+        store.save_run(rehearsal)
+
+    assert len(store.load_runs()) == 3
+    assert store.posts_today() == 0
 
 
 def test_published_history_respects_window(tmp_path):

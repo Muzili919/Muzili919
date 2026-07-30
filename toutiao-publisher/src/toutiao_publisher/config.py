@@ -33,10 +33,20 @@ class Secrets:
     serverchan_sendkey: str = ""
     dingtalk_webhook: str = ""
     dingtalk_secret: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 465
+    smtp_user: str = ""
+    smtp_pass: str = ""
+    email_to: str = ""
+
+    @property
+    def has_email(self) -> bool:
+        # 缺任何一项都发不出去，别让它半配着假装可用
+        return bool(self.smtp_host and self.smtp_user and self.smtp_pass and self.email_to)
 
     @property
     def has_alert_channel(self) -> bool:
-        return bool(self.serverchan_sendkey or self.dingtalk_webhook)
+        return bool(self.serverchan_sendkey or self.dingtalk_webhook or self.has_email)
 
 
 @dataclass
@@ -100,6 +110,11 @@ def load_config(config_path: Path | None = None) -> Config:
         serverchan_sendkey=os.getenv("SERVERCHAN_SENDKEY", "").strip(),
         dingtalk_webhook=os.getenv("DINGTALK_WEBHOOK", "").strip(),
         dingtalk_secret=os.getenv("DINGTALK_SECRET", "").strip(),
+        smtp_host=os.getenv("SMTP_HOST", "").strip(),
+        smtp_port=int(os.getenv("SMTP_PORT", "465").strip() or 465),
+        smtp_user=os.getenv("SMTP_USER", "").strip(),
+        smtp_pass=os.getenv("SMTP_PASS", "").strip(),
+        email_to=os.getenv("EMAIL_TO", "").strip(),
     )
 
     cfg = Config(raw=raw, secrets=secrets)

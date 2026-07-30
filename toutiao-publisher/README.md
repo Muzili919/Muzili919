@@ -46,13 +46,19 @@ cd toutiao-publisher
 
 一条命令搞定虚拟环境、依赖、Chromium、配置文件，最后跑一遍测试，并列出还需要你手动填的项。幂等，重复执行安全。
 
+> **Python 需要 3.10–3.13**，上限是硬的。playwright 依赖 greenlet，后者带 C 扩展，新版 Python 发布后往往几个月都没有预编译轮子，源码编译又对不上新的 C API——在 3.14 上装会甩出一屏 `Py_C_RECURSION_LIMIT` 未定义之类的编译错误。`setup.sh` 会自动挑一个区间内的解释器，默认的 `python3` 太新也不影响；想指定就 `PYTHON_BIN=/path/to/python3.13 ./setup.sh`。
+
 装完编辑三个文件：
 
 - `.env` —— LLM key 和至少一个告警渠道
 - `config/config.yaml` —— `content.domain` 等账号定位信息
 - `config/sources.json` —— 换成你关注的 RSS 源
 
-> **告警渠道一定要配。** 不配的话失败了你收不到通知，等于回到原来那个"悄无声息"的状态。Server酱最省事，微信直接收推送：https://sct.ftqq.com
+> **告警渠道一定要配。** 不配的话失败了你收不到通知，等于回到原来那个"悄无声息"的状态。三选一：
+>
+> - **邮件**（`SMTP_*` 四项）——手上有 SMTP 授权码就能用，不用注册任何服务，是唯一能立刻配好的
+> - **Server酱**——微信收推送最方便，但要先注册：https://sct.ftqq.com
+> - **钉钉群机器人**——要先建群拿 webhook
 
 ## 首次配置（三步，各做一次）
 
@@ -66,15 +72,26 @@ python scripts/login.py
 
 开浏览器 → 扫码登录 → 回终端按回车。登录态存到 `state/storage_state.json`，有效期通常几周。
 
+> 如果你本来就有一个开着调试端口、已经登录着头条的 Chrome（比如别的自动化脚本在用那个），连扫码都不用：
+>
+> ```bash
+> python scripts/import_login_from_cdp.py --port 9228
+> ```
+>
+> 它把 cookie 和 localStorage 直接搬过来。全程只读，不新建标签页、不导航、不动源浏览器。登录态过期时也是跑这个。
+
 **2. 启动带调试端口的 Chrome**
 
 ```bash
-./scripts/launch_chrome.sh
+./scripts/launch_chrome.sh          # 默认端口 9230
+CDP_PORT=9235 ./scripts/launch_chrome.sh
 ```
 
 在打开的窗口里登录 ChatGPT。这个 Chrome 用独立配置目录（`~/.chrome-cdp-profile`），和你日常用的 Chrome 互不干扰。
 
-> ⚠️ **最常见的坑**：Chrome 只有在"完全没有实例在跑"时 `--remote-debugging-port` 才生效。如果已经开着 Chrome 再启动，新窗口会挂到已有进程上，端口根本不会打开，而且**没有任何报错**。脚本会检测并提示。
+> **不需要退出正在跑的 Chrome。** 常见说法是"必须先完全退出 Chrome，否则 `--remote-debugging-port` 不生效"——那只在复用**同一个** `--user-data-dir` 时成立：那种情况下新命令只是给已有进程递个信号然后自己退了，端口不会开，也不报错。本脚本用的是独立配置目录，所以会真的起一个新进程，端口正常打开。已在同时跑着 5 个其它调试实例的机器上实测过。
+>
+> ⚠️ 真正要小心的是**端口撞车**。脚本发现端口已在监听就直接说"已就绪"退出——如果占用者是另一个 Chrome 实例，你会得到一个静默走错浏览器的链路：`doctor` 跑去那个浏览器里找 ChatGPT 标签页，永远找不到。多实例环境下先确认端口没人用，或用 `CDP_PORT=` 换一个，并同步改 `config.yaml` 的 `image.cdp_port`。
 
 **3. 体检**
 
@@ -106,6 +123,8 @@ python -m toutiao_publisher doctor
 退出码：`0` 成功 / `1` 失败 / `2` 正常跳过（比如今天没合适选题、或已达当日上限）。
 
 > **第一次务必先跑演练。** 确认选题、文案、配图都符合预期，再加 `--live`。
+>
+> 演练不占当天发布配额，也不会让"多久没发布"的健康检查闭嘴——只有真实发布才算数。所以想演练几次就演练几次，不会把 `--live` 挡在上限外面。
 
 ## 装定时任务
 
@@ -154,7 +173,8 @@ src/toutiao_publisher/
   images/quality.py          图片质量闸
   publish/toutiao.py         Playwright 发布
 
-scripts/login.py                   首次登录，存登录态
+scripts/login.py                   首次登录，扫码存登录态
+scripts/import_login_from_cdp.py   从已登录的 CDP 实例搬登录态，免扫码
 scripts/launch_chrome.sh           启动带调试端口的 Chrome
 scripts/install_launchagent.sh     装/卸定时任务
 
@@ -177,9 +197,10 @@ python -m toutiao_publisher doctor     # 外部依赖逐项体检
 
 | 现象 | 原因与解法 |
 |---|---|
-| `连不上 http://127.0.0.1:9230` | Chrome 没开调试端口。**先完全退出 Chrome**，再 `./scripts/launch_chrome.sh` |
-| `没找到包含 chatgpt.com 的标签页` | 那个 Chrome 窗口里得开着 ChatGPT 并保持登录 |
-| `头条登录态已失效` | 重跑 `python scripts/login.py` |
+| `连不上 http://127.0.0.1:9230` | Chrome 没在这个端口上开调试。跑 `./scripts/launch_chrome.sh`（不用退出别的 Chrome） |
+| `没找到包含 chatgpt.com 的标签页` | 那个 Chrome 窗口里得开着 ChatGPT 并保持登录。也可能是**端口被另一个 Chrome 实例占了**，脚本会误报"已就绪"——换 `CDP_PORT=` 并同步改 `config.yaml` |
+| `头条登录态已失效` | 重跑 `python scripts/login.py`，或 `python scripts/import_login_from_cdp.py --port <已登录实例端口>` |
+| `编辑器内容与预期不符` | 草稿没清干净或输入被编辑器吞了。已经中止、什么都没发，重跑即可；反复出现就看 `state/dry-run-preview.png` |
 | `等了 240 秒没等到新图` | ChatGPT 拒绝了提示词或额度用尽。打开标签页看它实际回了什么 |
 | `找不到「editor」对应的元素` | 头条改版了。更新 `publish/toutiao.py` 里的 `_SELECTORS` |
 | 配图总是被质量闸拦下 | 看 `status` 里的"无图"原因。确实太严就调 `config.yaml` 的 `image.quality` |
@@ -215,6 +236,8 @@ python -m pytest tests/ -q          # 34 项
 
 ## 已知限制
 
+- **真实发布这一步还没在线上验证过。** 演练模式已经在真实头条发布页跑通：登录态、找编辑器、逐字符输入、字数核对、关话题下拉框，全部实测正常。但**点"发布"那一下没有真发过**，所以有一个风险还没排除：头条对 CDP 合成的鼠标/键盘事件有过滤，同一个账号的另一套脚本被迫改用 pyautogui 发 OS 级点击才点得动。如果 `--live` 之后卡在"点了发布但 N 秒内没等到成功提示"，那就是撞上这个了——不是选择器错了，改 `_SELECTORS` 没用，得换成 OS 级点击。第一次 `--live` 请盯着看，别直接挂定时任务。
+- **没有内容合规过滤。** 头条号没有新闻许可就不能发时政、军事、外交、经济评论，没有财经资质不能荐股，加密货币也敏感。`config/sources.json` 里只留 AI/科技源已经把风险压低了，但 AI 新闻本身也可能扯到出口管制、中美博弈这类话题。真要挂定时任务无人值守，发布前得加一道关键词黑名单。
 - **必须有人登录的桌面会话**：Playwright 有头模式和 CDP 都需要图形环境，不能跑在纯 SSH 会话或服务器上。
 - **头条有风控**：已经做了逐字符随机延时输入、有头模式、复用真实登录态。但发得太频繁仍可能触发限制，`max_posts_per_day` 默认 1 条是有意保守。
 - **CDP 生图这条链路天然脆**：依赖 ChatGPT 前端 DOM，官方改版就会失效。所以设计成失败可降级——挂了就发纯文字，不阻断发布。如果哪天想彻底稳下来，换成图片 API（即梦/通义/DALL-E）是更省心的路，`images/` 下加一个新实现、在 `pipeline.py` 里换掉即可。
