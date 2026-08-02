@@ -3,6 +3,9 @@
 config/config.yaml
 config/sources.json
 
+# 待发队列：放的是内容稿件，不进版本库
+queue/
+
 # 运行时状态：登录态、日志、运行记录、生成的图片
 state/
 
