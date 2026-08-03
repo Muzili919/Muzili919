@@ -1,8 +1,11 @@
 """编排：RSS → 选题 → 成文 → 配图 → 发布。
 
-分级失败策略——这是整个设计的核心：
-  - 配图失败 → 降级为纯文字继续发（图是锦上添花，不该阻断发布）
-  - 其余任何环节失败 → 中止 + 告警
+失败策略：任何环节失败都中止 + 告警。
+
+⚠️ 这里曾经是"配图失败降级为纯文字继续发"，理由是"图只是锦上添花"。
+**该设计已作废**（2026-08-03）：规则改成每条内容必须带图、且图一律 GPT 生成，
+纯文字帖的曝光和完读都吃亏。配图拿不到就今天不发，由 image.required 控制。
+
 不管走到哪一步、成功还是失败，最后一定落一份运行记录。
 """
 
@@ -26,6 +29,27 @@ from .sources import rss
 from .state import STATUS_SKIPPED, STATUS_SUCCESS, RunRecord, StateStore
 
 log = logging.getLogger(__name__)
+
+
+class ImageRequired(RuntimeError):
+    """按规则必须带图，但没拿到图。"""
+
+
+def require_image(image_path: Path | None, required: bool, reason: str = "") -> None:
+    """没图就别发。
+
+    规则是每条内容都必须「文字+图片」，图一律 GPT 生成。这条以前是反的
+    （配图失败降级成纯文字继续发），改过来之后**必须有测试盯着**——一旦被
+    改回去，症状是"照常发布、没有任何报错"，只是发出去的帖子没有图，
+    要等很久才会有人发现。
+    """
+    if image_path is not None or not required:
+        return
+    raise ImageRequired(
+        "配图没拿到，按规则不发纯文字，本次中止。\n"
+        f"原因：{reason or '未知'}\n"
+        "要临时允许纯文字，把 config.yaml 的 image.required 设为 false。"
+    )
 
 
 class Pipeline:
@@ -120,8 +144,16 @@ class Pipeline:
             self.record.content_chars = article.char_count
             self._detail = f"{article.title}（{article.char_count} 字）"
 
-        # --- 4. 配图（失败可降级）---
+        # --- 4. 配图 ---
+        # 硬规则：每条内容都必须带图，图一律 GPT 生成。所以配图失败 = 中止，
+        # **不再降级成纯文字**（这曾经是本模块的核心设计，已作废）。
+        # 纯文字帖的曝光和完读都吃亏，宁可今天不发也不发没图的。
         image_path = self._make_image(selection.topic, article.image_prompt)
+        require_image(
+            image_path,
+            required=bool(cfg.get("image.required", True)),
+            reason=self.record.image_skipped_reason,
+        )
 
         # --- 5. 发布 ---
         with self._step("发布到头条"):

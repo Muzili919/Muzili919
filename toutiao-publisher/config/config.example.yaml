@@ -27,6 +27,9 @@ content:
 
 image:
   enabled: true
+  # 配图拿不到时是中止还是发纯文字。设 true = 必须带图，宁可不发。
+  # 纯文字帖在推荐和完读上都吃亏，所以默认要求带图。
+  required: true
   # CDP 连本地 Chrome。需要 Chrome 以 --remote-debugging-port=9230 启动，
   # 见 scripts/launch_chrome.sh
   #

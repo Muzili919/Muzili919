@@ -331,7 +331,12 @@ def main() -> int:
     if not args.markdown.exists():
         print(f"找不到 {args.markdown}")
         return 1
-    if args.cover and not args.cover.exists():
+    # 硬规则：每条内容都必须带图，图一律 GPT 生成。所以封面不是可选项，
+    # 演练也不放行——演练放行的话，等真发时才发现没图就白跑一趟。
+    if not args.cover:
+        print("❌ 必须指定 --cover。规则是每条内容都带图，没有纯文字这个选项。")
+        return 1
+    if not args.cover.exists():
         print(f"找不到封面 {args.cover}")
         return 1
     return publish(args.markdown, args.live, args.title, args.cover)

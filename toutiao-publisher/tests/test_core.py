@@ -297,3 +297,30 @@ def test_notifier_send_never_raises():
 
 def test_clean_strips_html():
     assert _clean("<p>你好 <b>世界</b></p>\n\n") == "你好 世界"
+
+
+# ---------- 必须带图 ----------
+
+
+def test_require_image_blocks_text_only_post():
+    """没图就不许发。
+
+    这条规则以前是反的（配图失败降级成纯文字继续发）。改回来之后必须有测试
+    盯着：一旦被改回去，症状是"照常发布、没有任何报错"，只是帖子没图，
+    很久都不会有人发现。
+    """
+    from toutiao_publisher.pipeline import ImageRequired, require_image
+
+    with pytest.raises(ImageRequired) as exc:
+        require_image(None, required=True, reason="CDP 生图失败：连不上")
+    message = str(exc.value)
+    assert "不发纯文字" in message
+    assert "CDP 生图失败：连不上" in message      # 原因要带出来，否则没法排查
+    assert "image.required" in message            # 要告诉人怎么临时关掉
+
+
+def test_require_image_passes_when_image_present(tmp_path):
+    from toutiao_publisher.pipeline import require_image
+
+    require_image(tmp_path / "cover.png", required=True)   # 有图：放行
+    require_image(None, required=False)                     # 显式关掉：放行
