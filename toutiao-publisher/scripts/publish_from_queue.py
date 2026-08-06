@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -38,9 +39,40 @@ from publish_article import md_to_plain, publish  # noqa: E402
 
 from toutiao_publisher.config import load_config  # noqa: E402
 from toutiao_publisher.notify import build_notifier  # noqa: E402
+from toutiao_publisher.publish.toutiao import ToutiaoPublisher  # noqa: E402
 
 QUEUE = ROOT / "queue"
 DONE = QUEUE / "published"
+
+
+def publish_weitoutiao(md_path: Path, cover: Path, live: bool) -> int:
+    """把稿子当微头条发。
+
+    为什么要有这条路：实测同一份内容，做成文章 338 展现只换来 1 次阅读，
+    做成微头条 326 展现换来 14 次——差 14 倍。长文单价再高（43.2 vs 7.8
+    元/万阅读），乘以 1 次阅读还是零。这个账号当前权重下，微头条才是
+    唯一有人看的形态。
+    """
+    cfg = load_config()
+    body = md_path.read_text(encoding="utf-8")
+    # 去掉草稿区（第一条 --- 之前的备选标题之类）
+    if "\n---" in body:
+        body = body.split("\n---", 1)[1]
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", body).strip()
+
+    n = len("".join(text.split()))
+    print(f"微头条，{n} 字，配图 {cover.name}")
+    if not (100 <= n <= 900):
+        print(f"❌ 字数 {n} 不在 100-900 区间，微头条太短没信息量、太长会被折叠")
+        return 1
+
+    if not live:
+        print("✅ 演练：内容和配图都就位，没有发布。")
+        return 0
+
+    result = ToutiaoPublisher(cfg).publish(content=text, image_path=cover, dry_run=False)
+    print("结果:", "成功" if result.ok else "失败", "|", result.detail)
+    return 0 if result.ok else 1
 
 
 def queued() -> list[Path]:
@@ -64,9 +96,11 @@ def main() -> int:
         for i, p in enumerate(items, 1):
             title, _ = md_to_plain(p.read_text(encoding="utf-8"))
             cover = p.with_suffix(".png")
-            print(f"  {i}. {p.name}")
-            print(f"     标题：{title or '（缺 # 标题）'}")
-            print(f"     封面：{'✅' if cover.exists() else '❌ 缺失，发不出去'}")
+            kind = "文章" if title else "微头条"
+            print(f"  {i}. [{kind}] {p.name}")
+            if title:
+                print(f"     标题：{title}")
+            print(f"     配图：{'✅' if cover.exists() else '❌ 缺失，发不出去'}")
         return 0
 
     cfg = load_config()
@@ -88,12 +122,17 @@ def main() -> int:
 
     print(f"取队首：{item.name}")
     if not cover.exists():
-        msg = f"{item.name} 没有同名封面 {cover.name}，头条封面是必填项，发不出去。"
+        msg = f"{item.name} 没有同名图 {cover.name}。规则是每条内容都必须带图，发不出去。"
         print(f"❌ {msg}")
-        notifier.send("头条发布失败：缺封面", msg)
+        notifier.send("头条发布失败：缺图", msg)
         return 1
 
-    rc = publish(item, live=args.live, title_override="", cover=cover)
+    # 有 `# 标题` 就当文章发，没有就当微头条发。不额外发明语法——
+    # 微头条本来就没有标题这个字段。
+    if title:
+        rc = publish(item, live=args.live, title_override="", cover=cover)
+    else:
+        rc = publish_weitoutiao(item, cover, live=args.live)
 
     if rc == 0 and args.live:
         DONE.mkdir(parents=True, exist_ok=True)
@@ -101,7 +140,9 @@ def main() -> int:
         item.rename(DONE / f"{stamp}-{item.name}")
         cover.rename(DONE / f"{stamp}-{cover.name}")
         print(f"已移入 {DONE}")
-        notifier.send("头条已发布", f"**{title}**\n\n来自待发队列：`{item.name}`")
+        # 微头条没有标题字段，用文件名兜底，别发一封标题是空的邮件
+        label = title or item.stem
+        notifier.send("头条已发布", f"**{label}**\n\n来自待发队列：`{item.name}`")
     elif rc != 0:
         notifier.send(
             "头条发布失败",

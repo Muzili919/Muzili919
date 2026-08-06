@@ -270,27 +270,40 @@ class ToutiaoPublisher:
         if leftover:
             log.warning("清空后编辑器仍有残留：%s", leftover[:60])
 
-        log.info("开始输入正文，%d 字", _visible_len(content))
-        lo, hi = self.delay_range
-        for ch in content:
-            page.keyboard.type(ch, delay=random.uniform(lo, hi))
-
-        page.wait_for_timeout(1000)
-
-        # 正文里的 #标签# 会拉起话题下拉框，它会一直浮在页面上挡住发布按钮，
-        # 最后那个标签也停在"未确认插入"的状态。Esc 关掉它，正文本身不受影响。
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(300)
-
         want = _visible_len(content)
-        got = _visible_len(_editor_text(editor))
-        log.info("正文输入完成，编辑器内实际 %d 字（预期 %d）", got, want)
-        # 差太多说明要么有草稿混进来，要么输入被前端吞了，两种都不该带着往下发
-        if abs(got - want) > max(15, want // 20):
+        lo, hi = self.delay_range
+
+        # 逐字输入偶尔会中途断掉——实测在 launchd 下跑时 367 字只进去了 115 字，
+        # 而同样的代码手动跑是通的。原因没查清（可能是发文助手抽屉弹出抢了焦点），
+        # 但既然是偶发的，重试比查根因划算：清空重来一次通常就好了。
+        # 绝不能不校验就往下走——发出去半截帖子是那种没人会发现的沉默事故。
+        for attempt in range(1, 4):
+            log.info("开始输入正文，%d 字（第 %d 次）", want, attempt)
+            for ch in content:
+                page.keyboard.type(ch, delay=random.uniform(lo, hi))
+
+            page.wait_for_timeout(1000)
+            # 正文里的 #标签# 会拉起话题下拉框，它会一直浮在页面上挡住发布按钮，
+            # 最后那个标签也停在"未确认插入"的状态。Esc 关掉它，正文本身不受影响。
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(300)
+
+            got = _visible_len(_editor_text(editor))
+            if abs(got - want) <= max(15, want // 20):
+                log.info("正文输入完成，编辑器内实际 %d 字（预期 %d）", got, want)
+                break
+
+            log.warning("第 %d 次输入不完整：实际 %d 字，预期 %d 字，清空重来", attempt, got, want)
+            editor.click()
+            page.keyboard.press("ControlOrMeta+A")
+            page.keyboard.press("Backspace")
+            page.wait_for_timeout(600)
+            self._dismiss_overlays(page)   # 抽屉要是弹出来了，顺手关掉再重试
+        else:
             raise PublishError(
-                f"编辑器内容与预期不符：应为 {want} 字，实际 {got} 字。\n"
-                f"可能是草稿没清干净，或者输入被富文本编辑器吞掉了。\n"
-                f"为避免发出残缺或混了旧草稿的内容，这里中止。\n"
+                f"正文输入三次都不完整：应为 {want} 字，最后一次 "
+                f"{_visible_len(_editor_text(editor))} 字。\n"
+                f"为避免发出残缺内容，这里中止。\n"
                 f"编辑器现有内容开头：{_editor_text(editor)[:80]}"
             )
 
@@ -370,21 +383,37 @@ class ToutiaoPublisher:
             return 'no-button';
         }"""
 
+        # 弹窗自己会写「已上传 N 张图片」，这是最准的完成信号。
+        # 缩略图一选中文件就出现了（带进度条），所以缩略图 ≠ 上传完成；
+        # 而上传没完成时「确定」是禁用的。之前只等 20 秒就放弃，
+        # 1.5MB 的图在慢网下传不完，报出来的是"没找到可点的确定"，
+        # 看着像选择器失配，实际只是等太短。
+        def uploaded_count() -> int:
+            return page.evaluate(
+                r"""() => {
+                    const m = document.body.innerText.match(/已上传\s*(\d+)\s*张图片/);
+                    return m ? parseInt(m[1], 10) : -1;
+                }"""
+            )
+
+        deadline = time.monotonic() + 60          # 大图 + 慢网留足余量
         outcome = "no-list"
-        for _ in range(40):  # 最多等 20 秒，覆盖大图上传
+        while time.monotonic() < deadline:
             outcome = page.evaluate(click_js)
             if outcome == "clicked":
                 break
             page.wait_for_timeout(500)
 
         if outcome != "clicked":
+            n = uploaded_count()
             shot = self.cfg.state_dir / "image-confirm-failed.png"
             page.screenshot(path=str(shot), full_page=True)
             raise PublishError(
-                f"上传弹窗里没找到可点的「确定」（{outcome}）。\n"
+                f"上传弹窗里没找到可点的「确定」（{outcome}，已上传 {n} 张）。\n"
                 f"当时的页面截图：{shot}\n"
                 "'no-list' = 缩略图没出来，文件可能没被接收；\n"
-                "'no-button' = 图在弹窗里但确认按钮一直禁用或改名了。"
+                "'no-button' + 已上传 0 张 = 60 秒还没传完，多半是网络或图太大；\n"
+                "'no-button' + 已上传 ≥1 张 = 传完了但按钮改名或仍禁用，要查选择器。"
             )
 
         page.wait_for_timeout(1500)
