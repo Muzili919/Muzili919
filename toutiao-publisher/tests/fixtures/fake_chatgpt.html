@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<!--
+  仿真 ChatGPT 页面，用于集成测试。
+
+  只复刻 cdp_chatgpt.py 真正依赖的那几个 DOM 特征：
+    - #prompt-textarea            contenteditable 输入框
+    - button[data-testid=send-button]  发送按钮，空内容时禁用
+    - 发送后延迟produce 一张 src 含 oaiusercontent 的 <img>
+
+  真实 ChatGPT 是 React 应用，靠 execCommand('insertText') 才能正确触发状态更新；
+  这里用 input 事件监听来模拟同样的行为，确保测试能验证到那条代码路径。
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Fake ChatGPT</title></head>
+<body>
+<main>
+  <div id="conversation"></div>
+
+  <div id="prompt-textarea" contenteditable="true"
+       style="border:1px solid #ccc;min-height:40px;padding:8px"></div>
+
+  <button data-testid="send-button" disabled>Send</button>
+</main>
+
+<script>
+  const composer = document.getElementById('prompt-textarea');
+  const sendBtn  = document.querySelector('button[data-testid="send-button"]');
+  const convo    = document.getElementById('conversation');
+
+  // 模拟 React：内容非空才允许发送。
+  // 这一条很关键——它验证了生产代码必须用 execCommand 而不是直接改 innerText，
+  // 后者不会触发 input 事件，按钮会一直禁用。
+  const sync = () => { sendBtn.disabled = composer.innerText.trim() === ''; };
+  composer.addEventListener('input', sync);
+  new MutationObserver(sync).observe(composer, {
+    childList: true, subtree: true, characterData: true
+  });
+
+  sendBtn.addEventListener('click', () => {
+    const prompt = composer.innerText.trim();
+    if (!prompt) return;
+
+    const echo = document.createElement('div');
+    echo.className = 'user-msg';
+    echo.textContent = prompt;
+    convo.appendChild(echo);
+    composer.innerText = '';
+    sync();
+
+    // 模拟生成耗时，验证生产代码的轮询等待逻辑
+    setTimeout(() => {
+      const img = document.createElement('img');
+      // 路径含 oaiusercontent，命中 _SELECTORS['generated_image'] 第一个选择器
+      img.src = '/oaiusercontent/generated.png?t=' + Date.now();
+      img.alt = 'Generated image';
+      convo.appendChild(img);
+    }, 1500);
+  });
+</script>
+</body>
+</html>

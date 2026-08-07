@@ -1,0 +1,92 @@
+# 复制成 config/config.yaml 后按需改。
+
+run:
+  # 演练模式：全流程都跑，唯独最后不点"发布"。第一次务必用它验证。
+  dry_run: true
+  # 同一天最多发几条
+  max_posts_per_day: 1
+  # 每个环节的超时（秒）
+  timeouts:
+    rss_fetch: 30
+    llm: 90
+    image_gen: 300
+    publish: 180
+
+content:
+  # 你的账号定位，AI 选题和成文都围绕它
+  domain: "AI 编程 / 独立开发 / 效率工具"
+  audience: "想用 AI 提效的开发者和创业者"
+  tone: "口语、具体、有观点，不说正确的废话"
+  # 微头条字数区间
+  min_chars: 180
+  max_chars: 500
+  # 候选池：先从 RSS 拉这么多条，再让 AI 挑
+  candidate_pool: 30
+  # 去重回溯天数：这些天内发过的标题/链接不再选
+  dedupe_days: 30
+
+image:
+  enabled: true
+  # 配图拿不到时是中止还是发纯文字。设 true = 必须带图，宁可不发。
+  # 纯文字帖在推荐和完读上都吃亏，所以默认要求带图。
+  required: true
+  # CDP 连本地 Chrome。需要 Chrome 以 --remote-debugging-port=9230 启动，
+  # 见 scripts/launch_chrome.sh
+  #
+  # 机器上已经有别的调试实例时，先确认这个端口没被占。撞车不会报错：
+  # launch_chrome.sh 见端口已监听就说"已就绪"退出，然后生图跑去那个
+  # 浏览器里找 ChatGPT 标签页，永远找不到。换端口要两边一起改
+  # （CDP_PORT=xxxx ./scripts/launch_chrome.sh + 这里）。
+  cdp_port: 9230
+  # ChatGPT 页面地址，用于在众多标签页里认出目标 tab
+  target_url_contains: "chatgpt.com"
+  # 生图提示词模板，{topic} 会被替换成当天选题
+  prompt_template: >
+    为一篇中文科技短文配一张 16:9 横图。主题：{topic}。
+    要求：扁平插画风格，简洁，主体明确，暖色调，
+    画面中不要出现任何文字、字母或数字。
+  # 等待出图的最长秒数
+  wait_timeout: 240
+  # 质量闸：不达标就不配图（宁可纯文字发，也不发张废图）
+  quality:
+    min_width: 512
+    min_height: 288
+    min_bytes: 20480          # 20KB，低于此基本是错误占位图
+    max_bytes: 10485760       # 10MB，头条上传上限保护
+    min_stddev: 12.0          # 像素标准差，过低说明画面接近纯色/空白
+    allowed_formats: ["PNG", "JPEG", "WEBP"]
+
+publish:
+  platform: toutiao
+  # 首次运行 scripts/login.py 生成，之后自动复用
+  storage_state: "state/storage_state.json"
+  publish_url: "https://mp.toutiao.com/profile_v4/weitoutiao/publish"
+  # 有头模式跑（headless 更容易被风控识别，且首次调试看得见）
+  headless: false
+  # 逐字符输入的随机延时区间（毫秒），模拟人工，降低风控概率
+  type_delay_ms: [40, 120]
+  # 发布后确认成功的等待秒数
+  confirm_timeout: 30
+  # 勾「头条首发」（声明 72 小时内只在头条发，换额外激励分成）。
+  # 页面默认多数时候是勾上的，但状态会随页面变化被重置，所以代码会主动检查补勾。
+  # 同一条内容还要同步发到别的平台的话，改成 false。
+  first_publish: true
+  # 指定浏览器可执行文件。留空用 Playwright 自带的那份，一般不用改。
+  # 想复用日常的 Chrome 才需要填，例如：
+  #   /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+  chrome_executable: ""
+  # 额外的浏览器启动参数。本机一般留空；
+  # 在容器/CI 里以 root 运行时需要 ["--no-sandbox", "--disable-dev-shm-usage"]
+  launch_args: []
+
+health:
+  # 超过这么多小时没有一次成功发布，健康检查就告警
+  # 按每天发 1 条算，26 小时给了 2 小时余量
+  max_hours_since_success: 26
+
+log:
+  level: INFO
+  # 日志和运行记录都写在这里
+  dir: "state/logs"
+  # 保留天数，超期自动清理
+  retention_days: 30

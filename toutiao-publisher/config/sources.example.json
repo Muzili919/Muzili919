@@ -1,0 +1,41 @@
+{
+  "_comment": "复制成 config/sources.json 后按你的领域增删。weight 越高，AI 选题时越优先。下面这些都在 2026-07-30 用 feedparser 实测过能出条目——RSS 源死得很快，加新源之前先 curl 一下，别等流程跑起来才发现是空的。",
+  "sources": [
+    {
+      "name": "量子位",
+      "url": "https://www.qbitai.com/feed",
+      "weight": 3,
+      "lang": "zh"
+    },
+    {
+      "name": "Hacker News 前端页",
+      "url": "https://hnrss.org/frontpage?points=150",
+      "weight": 3,
+      "lang": "en"
+    },
+    {
+      "name": "InfoQ 中国",
+      "url": "https://www.infoq.cn/feed",
+      "weight": 2,
+      "lang": "zh"
+    },
+    {
+      "name": "TechCrunch AI",
+      "url": "https://techcrunch.com/category/artificial-intelligence/feed/",
+      "weight": 2,
+      "lang": "en"
+    },
+    {
+      "name": "少数派",
+      "url": "https://sspai.com/feed",
+      "weight": 2,
+      "lang": "zh"
+    },
+    {
+      "name": "Solidot",
+      "url": "https://www.solidot.org/index.rss",
+      "weight": 1,
+      "lang": "zh"
+    }
+  ]
+}
